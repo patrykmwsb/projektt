@@ -2,347 +2,198 @@ import os
 import json
 import shutil
 import subprocess
-import sys 
-
-# --- Importy PyQt6 ---
-from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, 
-    QLabel, QLineEdit, QComboBox, QPushButton, QGroupBox, QListWidget,
-    QMessageBox, QTextEdit, QDialog, QDialogButtonBox, QSizePolicy
-)
-from PyQt6.QtGui import QPalette, QColor, QFont # Dodano QFont
-from PyQt6.QtCore import Qt
-
-# --- Ustalenie Ścieżki Aplikacji (dla .py i .exe) ---
-if getattr(sys, 'frozen', False):
-    application_path = os.path.dirname(sys.executable)
-else:
-    try:
-        application_path = os.path.dirname(os.path.abspath(__file__))
-    except NameError: 
-         application_path = os.getcwd()
-
-APP_DIR = application_path 
+import tkinter as tk
+from tkinter import messagebox, scrolledtext, ttk # Upewnij się, że ttk jest importowane
 
 # --- Stałe Globalne ---
-LOCAL_KEYS_BASE_DIR_NAME = "generated_keys_storage"
-LOCAL_KEYS_STORAGE_DIR = os.path.join(APP_DIR, LOCAL_KEYS_BASE_DIR_NAME)
-LOCAL_CONFIG_FILENAME = "config" # Zmieniona nazwa
-LOCAL_CONFIG_FILE_PATH = os.path.join(LOCAL_KEYS_STORAGE_DIR, LOCAL_CONFIG_FILENAME)
-KEYS_DB = os.path.join(APP_DIR, "keys_db.json")
-CONFIG_PATH = os.path.expanduser("~/.ssh/config")
+APP_DIR = os.path.dirname(os.path.abspath(__file__)) # Katalog, w którym znajduje się skrypt
+KEYS_DB = os.path.join(APP_DIR, "keys_db.json")      # Ścieżka do pliku bazy danych JSON (przechowuje metadane kluczy)
+CONFIG_PATH = os.path.expanduser("~/.ssh/config")    # Ścieżka do systemowego pliku konfiguracyjnego SSH
 
-# --- Kolory dla Ciemnego Motywu (używane w QPalette) ---
-DARK_COLOR = QColor(45, 45, 45)          # Ciemnoszary dla tła okna
-DISABLED_COLOR = QColor(127, 127, 127)   # Szary dla nieaktywnych elementów
-DARK_WIDGET_BG_COLOR = QColor(60, 60, 60) # Ciemniejszy dla tła widgetów jak Entry
-LIGHT_FG_COLOR = QColor(220, 220, 220)   # Jasny dla tekstu
-HIGHLIGHT_COLOR = QColor(0, 120, 215)    # Niebieski dla zaznaczenia
+# --- Kolory dla Ciemnego Motywu ---
+DARK_BG = "#2e2e2e"
+LIGHT_FG = "#e0e0e0" 
+ENTRY_BG = "#3c3c3c"
+BUTTON_BG = "#4a4a4a" 
+BUTTON_FG = LIGHT_FG
+ACTIVE_BUTTON_BG = "#5f5f5f" 
+SELECT_BG = "#0078D7" 
+BORDER_COLOR = "#555555" 
 
-# --- Funkcje Pomocnicze ---
-def ensure_dir(dir_path):
-    if not os.path.exists(dir_path):
-        os.makedirs(dir_path)
-
-# --- Funkcje Logiki Aplikacji (backend - bez zmian) ---
-# ... (wszystkie funkcje od ensure_db do show_local_config_file pozostają bez zmian) ...
+# --- Funkcje Logiki Aplikacji ---
 def ensure_db():
-    ensure_dir(APP_DIR) 
+    """Tworzy plik bazy danych JSON, jeśli nie istnieje."""
     if not os.path.exists(KEYS_DB):
         with open(KEYS_DB, "w", encoding="utf-8") as f:
-            json.dump({}, f) 
+            json.dump({}, f) # Inicjalizuje pustym obiektem JSON
 
-def update_local_config_file():
-    ensure_dir(LOCAL_KEYS_STORAGE_DIR) 
-    ensure_db() 
-    try: 
-        with open(KEYS_DB, "r", encoding="utf-8") as f:
-            keys_metadata = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"BŁĄD: Nie można odczytać bazy danych kluczy '{KEYS_DB}' przy aktualizacji lokalnego configa: {e}")
-        return False 
-
-    lines = [] 
-    active_local_entries = 0
-    for alias, data in keys_metadata.items():
-        if not data.get("in_ssh_dir", False) and data.get("path") and LOCAL_KEYS_STORAGE_DIR in data.get("path"):
-            local_key_path = data.get("path") 
-            config_host = data.get("config_host_alias")
-            if not config_host: 
-                 host_short_name = data.get('host', 'unknown').split('.')[0]
-                 config_host = f"{host_short_name}-{alias}"
-            
-            identity_file_local_abs_path = local_key_path.replace("\\", "/") 
-            lines.append(f"Host {config_host}")
-            lines.append(f"  HostName {data.get('host', 'unknown_host.com')}")
-            lines.append(f"  User git")
-            lines.append(f"  IdentityFile {identity_file_local_abs_path}") 
-            lines.append(f"  IdentitiesOnly yes")
-            lines.append("")
-            active_local_entries += 1
-    
-    try:
-        with open(LOCAL_CONFIG_FILE_PATH, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-        if active_local_entries > 0:
-            print(f"INFO: Lokalny plik konfiguracyjny '{LOCAL_CONFIG_FILENAME}' zaktualizowany. Liczba wpisów: {active_local_entries}")
-        else:
-            print(f"INFO: Lokalny plik konfiguracyjny '{LOCAL_CONFIG_FILENAME}' jest pusty (brak kluczy lokalnych).")
-        return True 
-    except IOError as e:
-        print(f"BŁĄD: Nie można zapisać lokalnego pliku konfiguracyjnego '{LOCAL_CONFIG_FILE_PATH}': {e}")
-        return False 
-
-
-def generate_key(email, host, alias, parent_widget=None): 
+def generate_key(email, host, alias):
+    """Generuje parę kluczy SSH (prywatny i publiczny) i zapisuje informacje w bazie."""
     if not email or not host or not alias:
-        if parent_widget: QMessageBox.warning(parent_widget, "Brak danych", "E-mail, Host i Alias są wymagane.")
-        return None 
+        return "E-mail, Host i Alias są wymagane." # Walidacja danych wejściowych
+    ensure_db() # Upewnij się, że baza danych istnieje
+    key_path = os.path.join(APP_DIR, alias) # Ścieżka do klucza w folderze aplikacji (nazwa pliku = alias)
     
-    ensure_db()
-    ensure_dir(LOCAL_KEYS_STORAGE_DIR)
-
-    local_key_path = os.path.join(LOCAL_KEYS_STORAGE_DIR, alias) 
-    
-    if os.path.exists(local_key_path) or os.path.exists(local_key_path + ".pub"):
-        reply = QMessageBox.StandardButton.No # Domyślna odpowiedź, jeśli parent_widget nie istnieje
-        if parent_widget:
-             reply = QMessageBox.question(parent_widget, "Potwierdzenie", 
-                                         f"Plik klucza '{alias}' lub '{alias}.pub' już istnieje w folderze '{LOCAL_KEYS_BASE_DIR_NAME}'. Czy chcesz go nadpisać?",
-                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
-                                         QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.No:
+    # Sprawdzenie, czy pliki klucza już istnieją i pytanie o nadpisanie
+    if os.path.exists(key_path) or os.path.exists(key_path + ".pub"):
+        if not messagebox.askyesno("Potwierdzenie", f"Plik klucza '{alias}' lub '{alias}.pub' już istnieje w folderze aplikacji. Czy chcesz go nadpisać?"):
             return f"Generowanie klucza '{alias}' anulowane."
         else:
-            try: 
-                if os.path.exists(local_key_path): os.remove(local_key_path)
-                if os.path.exists(local_key_path + ".pub"): os.remove(local_key_path + ".pub")
+            # Próba usunięcia istniejących plików przed wygenerowaniem nowych
+            try:
+                if os.path.exists(key_path): os.remove(key_path)
+                if os.path.exists(key_path + ".pub"): os.remove(key_path + ".pub")
             except OSError as e:
-                if parent_widget: QMessageBox.critical(parent_widget, "Błąd usuwania", f"Nie można usunąć istniejącego pliku klucza: {e}")
-                return None 
+                return f"Nie można usunąć istniejącego pliku klucza: {e}"
 
-    comment_string_ssh = f"email:{email} alias:{alias} host:{host}"
-    cmd = ["ssh-keygen", "-t", "ed25519", "-C", comment_string_ssh, "-f", local_key_path, "-N", ""]
+    # Komentarz dołączany do klucza publicznego
+    comment_string = f"email:{email} alias:{alias} host:{host}"
+    # Polecenie systemowe do generowania klucza SSH
+    cmd = ["ssh-keygen", "-t", "ed25519", "-C", comment_string, "-f", key_path, "-N", ""] # -N "" oznacza brak hasła
     try:
-        startupinfo = None
-        if os.name == 'nt':
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = subprocess.SW_HIDE
-
-        process = subprocess.run(cmd, check=True, capture_output=True, text=True, encoding='utf-8', startupinfo=startupinfo) 
+        # Uruchomienie polecenia ssh-keygen
+        process = subprocess.run(cmd, check=True, capture_output=True, text=True, encoding='utf-8')
     except subprocess.CalledProcessError as e:
-        if parent_widget: QMessageBox.critical(parent_widget, "Błąd ssh-keygen", f"Błąd wykonania ssh-keygen:\n{e.stderr}")
-        return None
+        return f"Błąd ssh-keygen: {e.stderr}" # Błąd wykonania polecenia
     except FileNotFoundError:
-        if parent_widget: QMessageBox.critical(parent_widget, "Błąd ssh-keygen", "Nie znaleziono polecenia 'ssh-keygen'.\nUpewnij się, że jest zainstalowane (np. z Git) i dostępne w PATH.")
-        return None
-    except Exception as e: 
-        if parent_widget: QMessageBox.critical(parent_widget, "Błąd subprocess", f"Niespodziewany błąd podczas uruchamiania ssh-keygen:\n{e}")
-        return None
+        return "Błąd: polecenie ssh-keygen nie znalezione. Upewnij się, że jest zainstalowane i w PATH." # ssh-keygen nie jest dostępne
 
+    # Zapis informacji o kluczu do bazy danych JSON
+    with open(KEYS_DB, "r", encoding="utf-8") as f:
+        keys = json.load(f)
+    keys[alias] = {"email": email, "host": host, "path": key_path, "in_ssh_dir": False} # Zapis metadanych
+    with open(KEYS_DB, "w", encoding="utf-8") as f:
+        json.dump(keys, f, indent=4, ensure_ascii=False) # Zapis z formatowaniem
+    return f"Klucz '{alias}' wygenerowany w folderze aplikacji.\nKomentarz klucza publicznego: {comment_string}"
 
-    public_key_file_path = local_key_path + ".pub"
-    host_short_name = host.split('.')[0] 
-    key_name_metadata = f"id_ed25519_{host_short_name}-{alias}" 
-    metadata_line_for_pub_key = f"# key_name: {key_name_metadata}\n" 
-
-    try:
-        with open(public_key_file_path, "r+", encoding="utf-8") as f_pub:
-            original_pub_key_content = f_pub.read()
-            f_pub.seek(0, 0)
-            f_pub.write(metadata_line_for_pub_key + original_pub_key_content)
-    except IOError as e:
-        if parent_widget: QMessageBox.critical(parent_widget, "Błąd zapisu .pub", f"Błąd podczas dodawania metadanych do pliku {public_key_file_path}:\n{e}")
-        return None
-
-    try: 
-        with open(KEYS_DB, "r", encoding="utf-8") as f:
-            keys = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-         keys = {} 
-
-    config_host_alias = f"{host_short_name}-{alias}" 
-    keys[alias] = {
-        "email": email, 
-        "host": host, 
-        "path": local_key_path, 
-        "config_host_alias": config_host_alias, 
-        "in_ssh_dir": False 
-    }
-    try:
-        with open(KEYS_DB, "w", encoding="utf-8") as f:
-            json.dump(keys, f, indent=4, ensure_ascii=False) 
-    except IOError as e:
-        if parent_widget: QMessageBox.critical(parent_widget, "Błąd zapisu DB", f"Nie można zapisać bazy danych {KEYS_DB}:\n{e}")
-        return None 
-
-    if not update_local_config_file(): 
-         if parent_widget: QMessageBox.warning(parent_widget, "Ostrzeżenie", f"Nie udało się zaktualizować lokalnego pliku {LOCAL_CONFIG_FILENAME}.")
-         
-    return f"Klucz '{alias}' wygenerowany w '{LOCAL_KEYS_BASE_DIR_NAME}'.\nDodano do .pub: {metadata_line_for_pub_key.strip()}"
-
-def move_key_to_ssh(alias, parent_widget=None): 
-    ssh_dir = os.path.expanduser("~/.ssh") 
-    os.makedirs(ssh_dir, exist_ok=True)
+def move_key_to_ssh(alias):
+    """Przenosi (kopiuje) wygenerowane pliki klucza do katalogu ~/.ssh i aktualizuje konfigurację."""
+    ssh_dir = os.path.expanduser("~/.ssh") # Standardowy katalog SSH użytkownika
+    os.makedirs(ssh_dir, exist_ok=True) # Utwórz katalog ~/.ssh, jeśli nie istnieje
     ensure_db()
 
-    try:
-        with open(KEYS_DB, "r", encoding="utf-8") as f:
-            keys = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        if parent_widget: QMessageBox.critical(parent_widget, "Błąd Bazy Danych", f"Nie można odczytać pliku {KEYS_DB}.")
-        return None 
+    with open(KEYS_DB, "r", encoding="utf-8") as f:
+        keys = json.load(f) # Odczyt bazy metadanych
 
     if alias not in keys:
-        if parent_widget: QMessageBox.warning(parent_widget, "Nie znaleziono aliasu", f"Alias '{alias}' nie istnieje w bazie.")
-        return None
+        return f"Alias '{alias}' nie istnieje w bazie." # Sprawdzenie, czy alias istnieje
     
-    entry = keys[alias]
-    ssh_key_dest_path_base = os.path.join(ssh_dir, alias) 
-    if entry.get("in_ssh_dir", False) and os.path.exists(ssh_key_dest_path_base):
-        reply = QMessageBox.StandardButton.No
-        if parent_widget:
-             reply = QMessageBox.question(parent_widget, "Potwierdzenie", 
-                                          f"Klucz '{alias}' jest już prawdopodobnie w ~/.ssh. Czy chcesz spróbować przenieść/skonfigurować ponownie?",
-                                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
-                                          QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.No:
+    entry = keys[alias] # Pobranie danych dla aliasu
+    # Sprawdzenie, czy klucz nie został już przeniesiony
+    if entry.get("in_ssh_dir", False) and os.path.exists(entry["path"]):
+         if not messagebox.askyesno("Potwierdzenie", f"Klucz '{alias}' jest już oznaczony jako przeniesiony i plik istnieje w '{entry['path']}'. Czy chcesz spróbować przenieść/skonfigurować ponownie?"):
             return f"Operacja dla '{alias}' anulowana."
 
-    local_key_path_base = entry.get("path", os.path.join(LOCAL_KEYS_STORAGE_DIR, alias))
-    if LOCAL_KEYS_STORAGE_DIR not in local_key_path_base:
-         local_key_path_base = os.path.join(LOCAL_KEYS_STORAGE_DIR, alias) 
+    # Ścieżki do plików klucza w folderze aplikacji
+    app_key_path = os.path.join(APP_DIR, alias)
+    app_key_pub_path = app_key_path + ".pub"
 
-    local_key_priv_path = local_key_path_base
-    local_key_pub_path = local_key_path_base + ".pub"
+    if not os.path.exists(app_key_path) or not os.path.exists(app_key_pub_path):
+        return f"Brak plików klucza '{alias}' w folderze aplikacji. Wygeneruj je najpierw."
 
-    if not os.path.exists(local_key_priv_path) or not os.path.exists(local_key_pub_path):
-        if parent_widget: QMessageBox.critical(parent_widget, "Brak plików źródłowych", f"Brak plików klucza '{alias}' w folderze '{LOCAL_KEYS_BASE_DIR_NAME}'. Wygeneruj je najpierw.")
-        return None
-
+    # Nowa ścieżka dla plików klucza w katalogu ~/.ssh
+    new_path_base = os.path.join(ssh_dir, alias) 
     try:
-        shutil.copy2(local_key_priv_path, ssh_key_dest_path_base)
-        shutil.copy2(local_key_pub_path, ssh_key_dest_path_base + ".pub")
-        os.chmod(ssh_key_dest_path_base, 0o600)
-        os.chmod(ssh_key_dest_path_base + ".pub", 0o644)
+        # Kopiowanie plików klucza
+        shutil.copy2(app_key_path, new_path_base)
+        shutil.copy2(app_key_pub_path, new_path_base + ".pub")
+        # Ustawienie odpowiednich uprawnień dla plików kluczy
+        os.chmod(new_path_base, 0o600) # Klucz prywatny: tylko właściciel może czytać/pisać
+        os.chmod(new_path_base + ".pub", 0o644) # Klucz publiczny: może być czytany przez innych
     except Exception as e:
-        if parent_widget: QMessageBox.critical(parent_widget, "Błąd kopiowania", f"Błąd podczas kopiowania plików klucza '{alias}':\n{e}")
-        return None
+        return f"Błąd podczas kopiowania plików klucza '{alias}': {e}"
 
-    keys[alias]["path"] = ssh_key_dest_path_base 
+    # Aktualizacja ścieżki i statusu w bazie metadanych
+    keys[alias]["path"] = new_path_base 
     keys[alias]["in_ssh_dir"] = True
-    try:
-        with open(KEYS_DB, "w", encoding="utf-8") as f:
-            json.dump(keys, f, indent=4, ensure_ascii=False)
-    except IOError as e:
-         if parent_widget: QMessageBox.critical(parent_widget, "Błąd zapisu DB", f"Nie można zaktualizować bazy danych {KEYS_DB} po przeniesieniu:\n{e}")
-         return f"Klucze '{alias}' skopiowane, ale wystąpił błąd aktualizacji bazy danych!"
-
+    with open(KEYS_DB, "w", encoding="utf-8") as f:
+        json.dump(keys, f, indent=4, ensure_ascii=False)
     
-    update_config_file(parent_widget) 
-    update_local_config_file() 
-    return f"Klucz '{alias}' został skopiowany do ~/.ssh i konfiguracja zaktualizowana."
+    update_config_file() # Zaktualizuj plik ~/.ssh/config
+    return f"Klucz '{alias}' został przeniesiony do ~/.ssh i konfiguracja zaktualizowana."
 
-def delete_key(alias, parent_widget=None): 
+def delete_key(alias):
+    """Usuwa pliki klucza (z folderu aplikacji i ~/.ssh) oraz wpis z bazy i konfiguracji."""
     ensure_db()
-    try:
-        with open(KEYS_DB, "r", encoding="utf-8") as f:
-            keys = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        if parent_widget: QMessageBox.critical(parent_widget, "Błąd Bazy Danych", f"Nie można odczytać pliku {KEYS_DB}.")
-        return None
+    with open(KEYS_DB, "r", encoding="utf-8") as f:
+        keys = json.load(f)
 
     if alias not in keys:
-        if parent_widget: QMessageBox.warning(parent_widget, "Nie znaleziono aliasu", f"Alias '{alias}' nie istnieje w bazie.")
-        return None
+        return f"Alias '{alias}' nie istnieje w bazie."
 
     entry = keys[alias]
-    paths_to_delete = set()
-    
-    local_key_in_storage_path = os.path.join(LOCAL_KEYS_STORAGE_DIR, alias)
-    paths_to_delete.add(local_key_in_storage_path)
-
+    paths_to_delete = set() # Zbiór ścieżek do usunięcia, aby uniknąć duplikatów
+    # Dodaj ścieżkę zapisaną w bazie (może być lokalna lub w ~/.ssh)
+    if "path" in entry: paths_to_delete.add(entry["path"])
+    # Dodaj domyślną ścieżkę lokalną (na wszelki wypadek)
+    paths_to_delete.add(os.path.join(APP_DIR, alias))
+    # Jeśli klucz był w ~/.ssh, dodaj tę ścieżkę
     if entry.get("in_ssh_dir"):
         paths_to_delete.add(os.path.join(os.path.expanduser("~/.ssh"), alias))
-    if "path" in entry and os.path.dirname(entry["path"]) == APP_DIR: 
-        paths_to_delete.add(entry["path"])
 
     files_deleted_count = 0
+    # Iteracja przez ścieżki i usuwanie plików
     for key_path_base in paths_to_delete:
         try:
             if os.path.exists(key_path_base):
-                os.remove(key_path_base)
+                os.remove(key_path_base) # Usuń plik klucza prywatnego
                 files_deleted_count += 1
             if os.path.exists(key_path_base + ".pub"):
-                os.remove(key_path_base + ".pub")
+                os.remove(key_path_base + ".pub") # Usuń plik klucza publicznego
                 files_deleted_count += 1
         except OSError as e:
+            # Wyświetl ostrzeżenie, ale kontynuuj, aby usunąć wpisy z bazy/konfiguracji
             print(f"Ostrzeżenie: Nie udało się usunąć pliku {key_path_base} lub {key_path_base}.pub: {e}")
 
-    del keys[alias]
-    try:
-        with open(KEYS_DB, "w", encoding="utf-8") as f:
-            json.dump(keys, f, indent=4, ensure_ascii=False)
-    except IOError as e:
-        if parent_widget: QMessageBox.critical(parent_widget, "Błąd zapisu DB", f"Nie można zaktualizować bazy danych {KEYS_DB} po usunięciu:\n{e}")
-        return f"Wystąpił błąd aktualizacji bazy danych! Pliki mogły zostać usunięte."
-
-    update_config_file(parent_widget) 
-    update_local_config_file() 
+    del keys[alias] # Usuń wpis aliasu z bazy metadanych
+    with open(KEYS_DB, "w", encoding="utf-8") as f:
+        json.dump(keys, f, indent=4, ensure_ascii=False)
+    
+    update_config_file() # Zaktualizuj plik ~/.ssh/config (usunie wpis dla tego aliasu)
     if files_deleted_count > 0:
         return f"Klucz '{alias}' (pliki i wpis) usunięty."
     else:
         return f"Wpis dla klucza '{alias}' usunięty z bazy i konfiguracji (pliki nie znalezione)."
 
-def update_config_file(parent_widget=None): 
+def update_config_file():
+    """Aktualizuje (nadpisuje) plik ~/.ssh/config na podstawie kluczy oznaczonych jako 'in_ssh_dir'."""
     ensure_db()
-    try:
-        with open(KEYS_DB, "r", encoding="utf-8") as f:
-            keys_metadata = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"BŁĄD: Nie można odczytać bazy danych kluczy '{KEYS_DB}' przy aktualizacji ~/.ssh/config: {e}")
-        if parent_widget: QMessageBox.critical(parent_widget, "Błąd Bazy Danych", f"Nie można odczytać pliku {KEYS_DB}. Aktualizacja ~/.ssh/config przerwana.")
-        return False
+    with open(KEYS_DB, "r", encoding="utf-8") as f:
+        keys = json.load(f)
 
-    lines = [] 
-    active_config_entries = 0
-    for alias, data in keys_metadata.items():
-        if data.get("in_ssh_dir", False) and data.get("path") and os.path.expanduser("~/.ssh") in data.get("path"): 
-            config_host = data.get("config_host_alias")
-            if not config_host: 
-                 host_short_name = data.get('host', 'unknown').split('.')[0]
-                 config_host = f"{host_short_name}-{alias}"
-
-            identity_file_in_ssh_config = os.path.join("~/.ssh", alias).replace("\\", "/") 
+    lines = [] # Lista linii do zapisu w pliku config
+    for alias, data in keys.items():
+        # Dodaj do configu tylko te klucze, które są w katalogu ~/.ssh
+        if data.get("in_ssh_dir", False) and "path" in data:
+            identity_file_path = data['path'] # Ścieżka do klucza prywatnego w ~/.ssh
+            try:
+                # Konwersja na ścieżkę względną z tyldą (~) jeśli to możliwe
+                home_dir = os.path.expanduser("~")
+                if identity_file_path.startswith(home_dir):
+                    identity_file_path = "~" + identity_file_path[len(home_dir):]
+                identity_file_path = identity_file_path.replace("\\", "/") # Upewnij się, że są slashe (ważne dla Windows)
+            except Exception:
+                pass # Jeśli konwersja się nie uda, użyj oryginalnej (absolutnej) ścieżki
             
-            lines.append(f"Host {config_host}") 
-            lines.append(f"  HostName {data.get('host', 'unknown_host.com')}") 
-            lines.append(f"  User git")
-            lines.append(f"  IdentityFile {identity_file_in_ssh_config}") 
-            lines.append(f"  IdentitiesOnly yes")
-            lines.append("")
-            active_config_entries +=1
+            # Formatowanie wpisu dla pliku ~/.ssh/config
+            lines.append(f"Host {alias}")
+            lines.append(f"  HostName {data['host']}")
+            lines.append(f"  User git") # Domyślny użytkownik dla GitHuba/GitLaba
+            lines.append(f"  IdentityFile {identity_file_path}")
+            lines.append(f"  IdentitiesOnly yes") # Dobra praktyka bezpieczeństwa
+            lines.append("") # Pusta linia dla czytelności
     
-    ensure_dir(os.path.expanduser("~/.ssh")) 
+    os.makedirs(os.path.expanduser("~/.ssh"), exist_ok=True) # Upewnij się, że katalog ~/.ssh istnieje
     try:
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-        if os.name != 'nt': 
-            os.chmod(CONFIG_PATH, 0o600)
-        
-        if active_config_entries > 0:
-            print(f"INFO: Plik ~/.ssh/config zaktualizowany. Liczba aktywnych wpisów: {active_config_entries}")
-        else:
-            print(f"INFO: Plik ~/.ssh/config jest teraz pusty (lub został wyczyszczony), ponieważ żadne zarządzane klucze nie są w ~/.ssh.")
-        return True
-
+            f.write("\n".join(lines)) # Zapisz nowe linie do pliku config
+        if os.name != 'nt': # Na systemach innych niż Windows (Linux, macOS)
+            os.chmod(CONFIG_PATH, 0o600) # Ustaw uprawnienia dla pliku config
     except IOError as e:
-        if parent_widget: QMessageBox.showwarning(parent_widget, "Błąd zapisu config", f"Nie można zapisać pliku {CONFIG_PATH}:\n{e}\nSprawdź uprawnienia.")
-        return False
-
+        messagebox.showwarning("Błąd zapisu config", f"Nie można zapisać pliku {CONFIG_PATH}: {e}\nSprawdź uprawnienia.")
 
 def show_config():
+    """Odczytuje i zwraca zawartość pliku ~/.ssh/config."""
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             return f.read()
@@ -350,260 +201,239 @@ def show_config():
         return f"Plik {CONFIG_PATH} nie istnieje."
 
 def show_keys_json():
+    """Odczytuje i zwraca zawartość bazy danych kluczy (KEYS_DB) jako sformatowany JSON."""
     ensure_db()
-    try:
-      with open(KEYS_DB, "r", encoding="utf-8") as f:
-          return json.dumps(json.load(f), indent=4, ensure_ascii=False)
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        return f"Błąd odczytu pliku bazy danych {KEYS_DB}:\n{e}"
+    with open(KEYS_DB, "r", encoding="utf-8") as f:
+        return json.dumps(json.load(f), indent=4, ensure_ascii=False)
 
+# --- Funkcje obsługi zdarzeń GUI ---
+def on_generate():
+    """Obsługa kliknięcia przycisku 'Generuj klucz'."""
+    msg = generate_key(email_entry.get(), host_var.get(), alias_entry.get())
+    messagebox.showinfo("Generowanie Klucza", msg)
+    update_keys_display() # Odśwież listę kluczy
 
-def show_local_config_file():
-    ensure_dir(LOCAL_KEYS_STORAGE_DIR) 
-    try:
-        with open(LOCAL_CONFIG_FILE_PATH, "r", encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        return f"Lokalny plik konfiguracyjny '{LOCAL_CONFIG_FILENAME}' nie istnieje (folder: '{LOCAL_KEYS_BASE_DIR_NAME}').\nZostanie utworzony po wygenerowaniu pierwszego klucza."
+def on_delete():
+    """Obsługa kliknięcia przycisku 'Usuń klucz'."""
+    alias = alias_entry.get()
+    if not alias: # Sprawdzenie, czy alias został podany
+        messagebox.showwarning("Brak aliasu", "Podaj alias klucza do usunięcia.")
+        return
+    # Potwierdzenie operacji usunięcia
+    if messagebox.askyesno("Potwierdzenie usunięcia", f"Czy na pewno chcesz usunąć klucz '{alias}' (pliki, wpis z bazy i konfiguracji SSH)?"):
+        msg = delete_key(alias)
+        messagebox.showinfo("Usuwanie Klucza", msg)
+        update_keys_display() # Odśwież listę kluczy
 
+def on_move_to_ssh():
+    """Obsługa kliknięcia przycisku 'Przenieś do ~/.ssh'."""
+    alias = alias_entry.get()
+    if not alias: # Sprawdzenie, czy alias został podany
+        messagebox.showwarning("Brak aliasu", "Podaj alias klucza do przeniesienia.")
+        return
+    msg = move_key_to_ssh(alias)
+    messagebox.showinfo("Przenoszenie Klucza", msg)
+    update_keys_display() # Odśwież listę kluczy
 
-# --- Klasa Okna Dialogowego do Wyświetlania Tekstu ---
-class TextViewerDialog(QDialog):
-    def __init__(self, title, content, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self.setMinimumSize(600, 400) 
+def on_show_config():
+    """Obsługa kliknięcia przycisku 'Pokaż ~/.ssh/config'."""
+    content = show_config()
+    display_text(f"Zawartość pliku: {CONFIG_PATH}", content) # Wyświetl zawartość w nowym oknie
 
-        self.layout = QVBoxLayout(self)
+def on_show_json(): 
+    """Obsługa kliknięcia przycisku 'Pokaż bazę kluczy'."""
+    content = show_keys_json()
+    display_text(f"Zawartość pliku: {KEYS_DB}", content) # Wyświetl zawartość w nowym oknie
 
-        self.text_edit = QTextEdit(self)
-        self.text_edit.setReadOnly(True)
-        self.text_edit.setPlainText(content)
-        # Usunięto setStyleSheet - użyje globalnej palety
-        self.layout.addWidget(self.text_edit)
+def display_text(title, content):
+    """Tworzy nowe okno (Toplevel) do wyświetlania tekstu."""
+    win = tk.Toplevel(root) # Nowe okno podrzędne
+    win.title(title)
+    win.geometry("700x500") 
+    win.configure(bg=DARK_BG) # Ustaw tło dla nowego okna
 
-        self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
-        self.button_box.accepted.connect(self.accept)
-        self.layout.addWidget(self.button_box)
-
-# --- Główna Klasa Aplikacji GUI (PyQt6) ---
-class SSHKeyManagerApp(QWidget): 
-    def __init__(self):
-        super().__init__()
-        self.init_ui()
-        # Przeniesiono ładowanie kluczy po ustawieniu palety w __main__
-        # self.load_and_display_keys() 
-
-    def init_ui(self):
-        self.setWindowTitle("Menedżer Kluczy SSH (PyQt6 - Prosty Ciemny)")
-        self.setGeometry(200, 200, 850, 600) 
-
-        main_layout = QVBoxLayout(self)
-
-        # Ramka Wejściowa
-        input_groupbox = QGroupBox("Dane Klucza")
-        input_layout = QGridLayout(input_groupbox) 
-        input_layout.addWidget(QLabel("E-mail:"), 0, 0, Qt.AlignmentFlag.AlignRight)
-        self.email_input = QLineEdit()
-        input_layout.addWidget(self.email_input, 0, 1)
-        input_layout.addWidget(QLabel("Host:"), 1, 0, Qt.AlignmentFlag.AlignRight)
-        self.host_combo = QComboBox()
-        self.host_combo.addItems(["github.com", "gitlab.com", "bitbucket.org", "inny_host.com"])
-        input_layout.addWidget(self.host_combo, 1, 1)
-        input_layout.addWidget(QLabel("Alias:"), 2, 0, Qt.AlignmentFlag.AlignRight)
-        self.alias_input = QLineEdit()
-        input_layout.addWidget(self.alias_input, 2, 1)
-        input_layout.setColumnStretch(1, 1) 
-        main_layout.addWidget(input_groupbox)
-
-        # Ramka Akcji
-        actions_groupbox = QGroupBox("Akcje")
-        actions_layout = QGridLayout(actions_groupbox) 
-        self.generate_btn = QPushButton("Generuj klucz")
-        self.generate_btn.clicked.connect(self.on_generate)
-        actions_layout.addWidget(self.generate_btn, 0, 0)
-        self.copy_btn = QPushButton(f"Kopiuj do {os.path.expanduser('~/.ssh')}") 
-        self.copy_btn.clicked.connect(self.on_copy_to_ssh)
-        actions_layout.addWidget(self.copy_btn, 0, 1)
-        self.delete_btn = QPushButton("Usuń klucz")
-        self.delete_btn.clicked.connect(self.on_delete)
-        actions_layout.addWidget(self.delete_btn, 0, 2)
-        self.show_sys_config_btn = QPushButton(f"Pokaż {CONFIG_PATH}")
-        self.show_sys_config_btn.clicked.connect(self.on_show_config)
-        actions_layout.addWidget(self.show_sys_config_btn, 1, 0)
-        self.show_db_btn = QPushButton(f"Pokaż {os.path.basename(KEYS_DB)}")
-        self.show_db_btn.clicked.connect(self.on_show_json)
-        actions_layout.addWidget(self.show_db_btn, 1, 1)
-        self.show_local_config_btn = QPushButton(f"Pokaż {LOCAL_CONFIG_FILENAME}") # Użycie nowej stałej
-        self.show_local_config_btn.clicked.connect(self.on_show_local_config)
-        actions_layout.addWidget(self.show_local_config_btn, 1, 2)
-        main_layout.addWidget(actions_groupbox)
-
-        # Ramka Listy Kluczy
-        list_groupbox = QGroupBox("Dostępne Klucze (z bazy aplikacji)")
-        list_layout = QVBoxLayout(list_groupbox) 
-        self.keys_list_widget = QListWidget()
-        # Usunięto setStyleSheet - użyje globalnej palety
-        # Ustawienie czcionki monospaced bezpośrednio
-        list_font = QFont("Consolas", 9) 
-        self.keys_list_widget.setFont(list_font)
-        list_layout.addWidget(self.keys_list_widget)
-        main_layout.addWidget(list_groupbox)
-        main_layout.setStretchFactor(list_groupbox, 1) 
-
-    # Metody obsługi zdarzeń (Sloty) - bez zmian w logice wywołań
-    def show_message(self, title, text, icon=QMessageBox.Icon.Information):
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle(title)
-        msg_box.setText(text)
-        msg_box.setIcon(icon)
-        # Dodanie stylizacji do QMessageBox (opcjonalnie, może dziedziczyć)
-        msg_box.setStyleSheet(f"QMessageBox {{ background-color: {DARK_COLOR.name()}; }}"
-                              f"QLabel {{ color: {LIGHT_FG_COLOR.name()}; background-color: transparent; }}"
-                              f"QPushButton {{ min-width: 70px; }}") # Użyj kolorów z palety
-        msg_box.exec()
-
-    def on_generate(self):
-        email = self.email_input.text().strip()
-        host = self.host_combo.currentText()
-        alias = self.alias_input.text().strip()
-        result = generate_key(email, host, alias, parent_widget=self)
-        if result and "anulowane" not in result.lower(): # Pokaż tylko sukcesy
-            self.show_message("Generowanie Klucza", result)
-        if result: # Zawsze odświeżaj, nawet jeśli anulowano, aby wyczyścić ewentualne błędy
-            self.load_and_display_keys()
-
-    def on_copy_to_ssh(self): 
-        alias = self.alias_input.text().strip()
-        if not alias:
-            self.show_message("Brak aliasu", "Podaj alias klucza do skopiowania.", QMessageBox.Icon.Warning)
-            return
-        result = move_key_to_ssh(alias, parent_widget=self) 
-        if result and "anulowane" not in result.lower():
-            self.show_message("Kopiowanie Klucza", result)
-        if result: # Zawsze odświeżaj
-            self.load_and_display_keys()
-
-    def on_delete(self):
-        alias = self.alias_input.text().strip()
-        if not alias:
-            self.show_message("Brak aliasu", "Podaj alias klucza do usunięcia.", QMessageBox.Icon.Warning)
-            return
-        
-        reply = QMessageBox.question(self, "Potwierdzenie usunięcia", 
-                                     f"Czy na pewno chcesz usunąć klucz '{alias}'?", # Krótszy tekst
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
-                                     QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
-            result = delete_key(alias, parent_widget=self)
-            if result:
-                self.show_message("Usuwanie Klucza", result)
-                self.load_and_display_keys()
-
-    def on_show_config(self):
-        content = show_config()
-        self.display_text_dialog(f"Zawartość systemowego pliku: {CONFIG_PATH}", content)
-
-    def on_show_json(self):
-        content = show_keys_json()
-        self.display_text_dialog(f"Zawartość bazy danych: {KEYS_DB}", content)
-
-    def on_show_local_config(self):
-        content = show_local_config_file()
-        self.display_text_dialog(f"Zawartość lokalnego pliku: {LOCAL_CONFIG_FILE_PATH}", content)
-
-    def display_text_dialog(self, title, content):
-        dialog = TextViewerDialog(title, content, self)
-        dialog.exec()
-
-    def load_and_display_keys(self):
-        """Ładuje dane z KEYS_DB i aktualizuje QListWidget."""
-        self.keys_list_widget.clear()
-        try:
-            ensure_db()
-            with open(KEYS_DB, "r", encoding="utf-8") as f:
-                keys = json.load(f)
-            if not keys:
-                self.keys_list_widget.addItem("  Brak kluczy w bazie danych aplikacji.")
-            else:
-                for alias, data in keys.items():
-                    email_display = data.get('email', 'brak emaila')
-                    status_info = []
-                    path_to_display = "Nieznana ścieżka"
-                    config_host_display = data.get("config_host_alias", f"{data.get('host','unknown').split('.')[0]}-{alias}")
-
-                    if data.get("in_ssh_dir"):
-                        path_in_ssh = os.path.join(os.path.expanduser("~/.ssh"), alias)
-                        path_to_display = path_in_ssh
-                        priv_key_exists = os.path.exists(path_in_ssh)
-                        pub_key_exists = os.path.exists(path_in_ssh + ".pub")
-                        status_info.append(f"w ~/.ssh (Host: {config_host_display})")
-                    else:
-                        local_path = data.get("path", os.path.join(LOCAL_KEYS_STORAGE_DIR, alias))
-                        path_to_display = local_path
-                        priv_key_exists = os.path.exists(local_path)
-                        pub_key_exists = os.path.exists(local_path + ".pub")
-                        status_info.append(f"w {LOCAL_KEYS_BASE_DIR_NAME} (Config Host będzie: {config_host_display})")
-                    
-                    if priv_key_exists and pub_key_exists: pass 
-                    elif priv_key_exists and not pub_key_exists: status_info.append("BRAK .pub!")
-                    elif not priv_key_exists and pub_key_exists: status_info.append("BRAK klucza pryw.!")
-                    elif not priv_key_exists and not pub_key_exists: status_info.append("BRAK plików!")
-                    
-                    status_text = ", ".join(s for s in status_info if s)
-                    line1 = f"Alias: {alias}  |  Email: {email_display}"
-                    line2 = f"  └─ ({status_text}) Ścieżka: {path_to_display}"
-                    
-                    self.keys_list_widget.addItem(line1)
-                    self.keys_list_widget.addItem(line2)
-                    self.keys_list_widget.addItem("") 
-
-        except FileNotFoundError:
-            self.keys_list_widget.addItem(f"  Baza danych ({KEYS_DB}) nie znaleziona.")
-        except json.JSONDecodeError:
-            self.keys_list_widget.addItem("  Błąd odczytu bazy danych (nieprawidłowy JSON).")
-
-
-# --- Główna część aplikacji ---
-if __name__ == '__main__':
-    app = QApplication(sys.argv) 
-
-    # --- Ustawienie Prostej Ciemnej Palety ---
-    dark_palette = QPalette()
-    # Role dla tekstu
-    dark_palette.setColor(QPalette.ColorRole.WindowText, LIGHT_FG_COLOR) # Główny tekst w oknie
-    dark_palette.setColor(QPalette.ColorRole.Text, LIGHT_FG_COLOR)       # Tekst w polach edycji, listach itp.
-    dark_palette.setColor(QPalette.ColorRole.ButtonText, LIGHT_FG_COLOR) # Tekst na przyciskach
-    dark_palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red) # Tekst bardzo kontrastowy (rzadko używany)
-    dark_palette.setColor(QPalette.ColorRole.HighlightedText, LIGHT_FG_COLOR) # Tekst zaznaczenia
-
-    # Role dla tła
-    dark_palette.setColor(QPalette.ColorRole.Window, DARK_COLOR)          # Tło głównego okna
-    dark_palette.setColor(QPalette.ColorRole.Base, DARK_WIDGET_BG_COLOR)  # Tło dla widgetów z tekstem (LineEdit, ListWidget, TextEdit)
-    dark_palette.setColor(QPalette.ColorRole.AlternateBase, DARK_COLOR)   # Tło alternatywne (np. w widokach tabel)
-    dark_palette.setColor(QPalette.ColorRole.ToolTipBase, DARK_COLOR)     # Tło podpowiedzi
-    dark_palette.setColor(QPalette.ColorRole.ToolTipText, LIGHT_FG_COLOR) # Tekst podpowiedzi
-    dark_palette.setColor(QPalette.ColorRole.Button, DARK_WIDGET_BG_COLOR) # Tło przycisków (może być lekko inne niż okna)
-    dark_palette.setColor(QPalette.ColorRole.Highlight, HIGHLIGHT_COLOR)  # Tło zaznaczenia
-
-    # Role dla nieaktywnych elementów
-    dark_palette.setColor(QPalette.ColorRole.PlaceholderText, DISABLED_COLOR) # Tekst zastępczy
-    # Można też ustawić kolory dla stanu Disabled, np. ciemniejszy tekst/tło
-
-    # Zastosowanie palety do całej aplikacji
-    app.setPalette(dark_palette)
+    text_frame = ttk.Frame(win, padding=10) # Ramka dla ScrolledText i przycisku
+    text_frame.pack(fill=tk.BOTH, expand=True)
     
-    # Ustawienie domyślnej czcionki (opcjonalnie)
-    # default_font = QFont("Segoe UI", 9) 
-    # app.setFont(default_font)
+    text_area = scrolledtext.ScrolledText(text_frame, wrap=tk.WORD, width=80, height=20, font=("Consolas", 10))
+    text_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True) # Rozciągnij pole tekstowe
+    
+    # Stylizacja pola tekstowego
+    text_area.configure(bg=ENTRY_BG, fg=LIGHT_FG, insertbackground=LIGHT_FG, relief=tk.FLAT, borderwidth=1, highlightthickness=1, highlightbackground=BORDER_COLOR)
+    text_area.insert(tk.END, content) # Wstaw tekst
+    text_area.config(state=tk.DISABLED) # Ustaw pole jako tylko do odczytu
+    
+    # Przycisk "Zamknij" w nowym oknie
+    close_button = ttk.Button(win, text="Zamknij", command=win.destroy, style="Accent.TButton") # Użyj specjalnego stylu
+    close_button.pack(pady=(5,10)) # Dodaj padding pod przyciskiem
 
-    # --- Koniec ustawiania palety ---
 
-    main_window = SSHKeyManagerApp() 
-    main_window.load_and_display_keys() # Załaduj klucze *po* ustawieniu palety i utworzeniu okna
-    main_window.show() 
+def update_keys_display():
+    """Odświeża listę dostępnych kluczy w GUI."""
+    keys_listbox.delete(0, tk.END) # Wyczyść aktualną listę
+    try:
+        ensure_db()
+        with open(KEYS_DB, "r", encoding="utf-8") as f:
+            keys = json.load(f) # Załaduj metadane kluczy
+        if not keys:
+            keys_listbox.insert(tk.END, "  Brak kluczy w bazie danych aplikacji.")
+        else:
+            # Iteruj przez klucze i dodawaj je do Listboxa
+            for alias, data in keys.items():
+                path_display = data.get('path', 'Brak ścieżki')
+                email_display = data.get('email', 'brak emaila')
+                status_info = [] # Lista informacji o statusie
+                
+                # Sprawdzenie istnienia plików kluczy
+                priv_key_exists = os.path.exists(path_display)
+                pub_key_exists = os.path.exists(path_display + ".pub")
 
-    ensure_dir(LOCAL_KEYS_STORAGE_DIR) 
-    update_local_config_file() 
+                if priv_key_exists and pub_key_exists:
+                    # Można pominąć "Pliki OK" dla czystszego wyglądu
+                    pass 
+                elif priv_key_exists and not pub_key_exists:
+                    status_info.append("BRAK .pub!")
+                elif not priv_key_exists and pub_key_exists:
+                    status_info.append("BRAK klucza pryw.!")
+                elif not priv_key_exists and not pub_key_exists:
+                    status_info.append("BRAK plików!")
+                
+                # Informacja o lokalizacji klucza
+                if data.get("in_ssh_dir"):
+                    status_info.append("w ~/.ssh")
+                else:
+                    status_info.append("w folderze aplikacji")
+                
+                # Formatowanie tekstu statusu (usuwa puste elementy)
+                status_text = ", ".join(s for s in status_info if s)
+                display_string = f"  Alias: {alias:<18} Email: {email_display:<28} Ścieżka: {path_display} ({status_text})"
+                keys_listbox.insert(tk.END, display_string) # Dodaj wpis do Listboxa
+    except FileNotFoundError:
+        keys_listbox.insert(tk.END, f"  Baza danych ({KEYS_DB}) nie znaleziona.")
+    except json.JSONDecodeError:
+        keys_listbox.insert(tk.END, "  Błąd odczytu bazy danych (nieprawidłowy JSON).")
+    keys_listbox.config(width=0) # Automatyczne dopasowanie szerokości Listboxa
 
-    sys.exit(app.exec())
+# --- Główne okno aplikacji ---
+root = tk.Tk() # Stworzenie głównego okna
+root.title("Menedżer Kluczy SSH") # Tytuł okna
+root.geometry("980x600") # Rozmiar okna
+root.configure(bg=DARK_BG) # Ustawienie ciemnego tła dla głównego okna
+
+# --- Konfiguracja Stylów ttk ---
+style = ttk.Style(root) # Inicjalizacja obiektu stylu
+style.theme_use('clam') # Wybór motywu bazowego ('clam' jest elastyczny)
+
+# Definicja ogólnych stylów dla widgetów ttk
+style.configure('.', background=DARK_BG, foreground=LIGHT_FG, fieldbackground=ENTRY_BG, borderwidth=1, lightcolor=DARK_BG, darkcolor=DARK_BG)
+style.map('.', background=[('active', ACTIVE_BUTTON_BG)]) # Efekt hover dla niektórych widgetów
+
+# Style dla poszczególnych typów widgetów ttk
+style.configure("TLabel", background=DARK_BG, foreground=LIGHT_FG, padding=2)
+style.configure("TEntry", fieldbackground=ENTRY_BG, foreground=LIGHT_FG, insertcolor=LIGHT_FG, bordercolor=BORDER_COLOR)
+style.configure("TButton", background=BUTTON_BG, foreground=BUTTON_FG, padding=5, borderwidth=1, relief="raised")
+style.map("TButton",
+          background=[('pressed', SELECT_BG), ('active', ACTIVE_BUTTON_BG)], # Wygląd przycisku w różnych stanach
+          foreground=[('pressed', LIGHT_FG), ('active', LIGHT_FG)],
+          relief=[('pressed', 'sunken'), ('!pressed', 'raised')])
+
+style.configure("TLabelFrame", background=DARK_BG, bordercolor=BORDER_COLOR) # Ramki grupujące
+style.configure("TLabelFrame.Label", background=DARK_BG, foreground=LIGHT_FG, font=('TkDefaultFont', 9, 'bold')) # Etykieta ramki
+
+style.configure("TCombobox", fieldbackground=ENTRY_BG, background=BUTTON_BG, foreground=LIGHT_FG, arrowcolor=LIGHT_FG, bordercolor=BORDER_COLOR)
+style.map('TCombobox', # Wygląd Comboboxa w różnych stanach
+          fieldbackground=[('readonly', ENTRY_BG)],
+          selectbackground=[('readonly', DARK_BG)], 
+          selectforeground=[('readonly', LIGHT_FG)],
+          foreground=[('readonly', LIGHT_FG)],
+          arrowcolor=[('readonly', LIGHT_FG)])
+
+# Próba stylizacji listy rozwijanej w TCombobox (może nie działać identycznie na wszystkich systemach)
+root.option_add('*TCombobox*Listbox.background', ENTRY_BG)
+root.option_add('*TCombobox*Listbox.foreground', LIGHT_FG)
+root.option_add('*TCombobox*Listbox.selectBackground', SELECT_BG)
+root.option_add('*TCombobox*Listbox.selectForeground', LIGHT_FG)
+root.option_add('*TCombobox*Listbox.font', ("Consolas", 10))
+
+# Specjalny styl dla przycisku "Zamknij" (akcentujący)
+style.configure("Accent.TButton", background=SELECT_BG, foreground=LIGHT_FG, padding=5)
+style.map("Accent.TButton",
+          background=[('pressed', ACTIVE_BUTTON_BG), ('active', ACTIVE_BUTTON_BG)],
+          relief=[('pressed', 'sunken'), ('!pressed', 'raised')])
+
+
+# --- Układ GUI (rozmieszczenie widgetów w oknie) ---
+# Ramka dla pól wejściowych (email, host, alias)
+input_frame = ttk.LabelFrame(root, text="Dane Klucza", padding=(10, 10))
+input_frame.grid(row=0, column=0, columnspan=2, padx=10, pady=(10,5), sticky="ew") # "ew" = rozciągnij wschód-zachód
+
+# Pola wejściowe
+ttk.Label(input_frame, text="E-mail:").grid(row=0, column=0, padx=5, pady=5, sticky="e") # "e" = wyrównaj do prawej (wschód)
+email_entry = ttk.Entry(input_frame, width=50)
+email_entry.grid(row=0, column=1, padx=5, pady=5, sticky="w") # "w" = wyrównaj do lewej (zachód)
+
+ttk.Label(input_frame, text="Host:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+host_var = tk.StringVar(value="github.com") # Zmienna przechowująca wybraną wartość hosta
+host_options = ["github.com", "gitlab.com", "bitbucket.org", "inny_host.com"] # Opcje dla Comboboxa
+host_menu = ttk.Combobox(input_frame, textvariable=host_var, values=host_options, width=47, state="readonly") # state="readonly" - użytkownik nie może wpisać własnej wartości
+host_menu.set(host_options[0]) # Ustawienie domyślnej wartości
+host_menu.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+
+ttk.Label(input_frame, text="Alias:").grid(row=2, column=0, padx=5, pady=5, sticky="e")
+alias_entry = ttk.Entry(input_frame, width=50)
+alias_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
+
+# Ramka dla przycisków akcji
+buttons_frame = ttk.LabelFrame(root, text="Akcje", padding=(10, 10))
+buttons_frame.grid(row=1, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
+
+btn_width = 20 # Wspólna szerokość dla przycisków
+
+# Przyciski akcji
+btn_generate = ttk.Button(buttons_frame, text="Generuj klucz", command=on_generate, width=btn_width)
+btn_generate.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+
+btn_move_to_ssh = ttk.Button(buttons_frame, text="Przenieś do ~/.ssh", command=on_move_to_ssh, width=btn_width)
+btn_move_to_ssh.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+
+btn_delete = ttk.Button(buttons_frame, text="Usuń klucz", command=on_delete, width=btn_width)
+btn_delete.grid(row=0, column=2, padx=5, pady=5, sticky="ew")
+
+btn_show_config = ttk.Button(buttons_frame, text="Pokaż ~/.ssh/config", command=on_show_config, width=btn_width)
+btn_show_config.grid(row=1, column=0, padx=5, pady=5, sticky="ew")
+
+btn_show_json_db_btn = ttk.Button(buttons_frame, text="Pokaż bazę kluczy", command=on_show_json, width=btn_width)
+btn_show_json_db_btn.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+
+# Konfiguracja rozciągania kolumn w ramce przycisków, aby przyciski wypełniały dostępną przestrzeń
+buttons_frame.columnconfigure(0, weight=1)
+buttons_frame.columnconfigure(1, weight=1)
+buttons_frame.columnconfigure(2, weight=1)
+
+# Ramka dla listy dostępnych kluczy
+keys_display_frame = ttk.LabelFrame(root, text="Dostępne Klucze (z bazy aplikacji)", padding=(10,10))
+keys_display_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=10, pady=10) # "nsew" = rozciągnij we wszystkich kierunkach
+
+# Konfiguracja rozciągania wiersza i kolumny głównego okna, aby ramka z listą kluczy się powiększała
+root.grid_rowconfigure(2, weight=1) 
+root.grid_columnconfigure(0, weight=1) 
+
+# Listbox do wyświetlania kluczy
+keys_listbox = tk.Listbox(keys_display_frame, height=10, font=("Consolas", 9), relief=tk.FLAT, borderwidth=1) 
+# Stylizacja Listboxa (jest to standardowy widget tk, więc stylizujemy bezpośrednio)
+keys_listbox.configure(bg=ENTRY_BG, fg=LIGHT_FG, selectbackground=SELECT_BG, selectforeground=LIGHT_FG, 
+                       highlightthickness=1, highlightbackground=BORDER_COLOR, highlightcolor=BORDER_COLOR, bd=1)
+
+# Paski przewijania dla Listboxa (używamy ttk.Scrollbar dla spójności wyglądu)
+scrollbar_y = ttk.Scrollbar(keys_display_frame, orient=tk.VERTICAL, command=keys_listbox.yview)
+scrollbar_x = ttk.Scrollbar(keys_display_frame, orient=tk.HORIZONTAL, command=keys_listbox.xview)
+keys_listbox.config(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set) # Powiązanie scrollbarów z Listboxem
+
+# Rozmieszczenie scrollbarów i Listboxa w ramce
+scrollbar_y.pack(side=tk.RIGHT, fill=tk.Y) # Scrollbar Y po prawej, wypełnia wysokość
+scrollbar_x.pack(side=tk.BOTTOM, fill=tk.X) # Scrollbar X na dole, wypełnia szerokość
+keys_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True) # Listbox po lewej, wypełnia resztę przestrzeni
+
+update_keys_display() # Pierwsze załadowanie i wyświetlenie listy kluczy
+
+root.mainloop() # Uruchomienie głównej pętli zdarzeń Tkinter
